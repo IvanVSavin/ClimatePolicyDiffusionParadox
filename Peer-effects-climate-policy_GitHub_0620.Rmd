@@ -1,0 +1,666 @@
+---
+title: "The paradox of climate policy diffusion"
+author: "Ivan Savin, Philipp Mundt and Margherita Bellanca"
+date: '2025-01-20'
+output: word_document
+---
+
+```{r setup, include=FALSE}
+
+rm(list=ls())
+knitr::opts_chunk$set(fig.width=10, fig.height=15,dpi=500,warning = FALSE, message = FALSE) #10 15 
+mcFr2 <- function(model, init) {
+  return( list( "mcf" = 1 - logLik(model)[[1]]/init ) )
+}
+
+library("plm")
+library("pglm")
+library("corrplot")
+library("domir")
+library("fastshap")
+library("ggplot2")
+library("performance")
+library("plyr")
+library ("lmtest")
+library("sandwich")
+library("lfe")
+library("shapley")
+library("DescTools")
+
+#surpress warnings
+defaultW <- getOption("warn")
+options(warn = -1)
+
+# Controls <- read.csv("D:/Projects/2_Working Papers/Margherita/Controls1990updated.csv")
+# Controls <- pdata.frame(Controls, index=c("ISO","Year"))
+
+
+Flow <- read.csv("D:/Projects/2_Working Papers/Margherita/DataPanelFormatFlowV27.csv")
+Flow <- pdata.frame(Flow, index=c("ISO","Year"))
+Flow <- transform(Flow, Trend = as.numeric(Year)) 
+#FlowM <- merge(x=Flow,y=Controls, by.x=c("ISO","Year"), by.y=c("ISO","Year"))
+FlowM <- Flow
+FlowM <- ddply(FlowM, .(ISO), transform, SpatialLag.Count.Lag = c(NA, SpatialLag.Count[-length(SpatialLag.Count)]))
+FlowM <- ddply(FlowM, .(ISO), transform, Count.Lag = c(NA, Count[-length(Count)]))
+FlowM <- ddply(FlowM, .(ISO), transform, Market.Instr.Lag = c(NA, Market.Instr[-length(Market.Instr)]))
+FlowM <- ddply(FlowM, .(ISO), transform, Non.Market.Instr.Lag = c(NA, Non.Market.Instr[-length(Non.Market.Instr)]))
+FlowM <- ddply(FlowM, .(ISO), transform, TechSup.Instr.Lag = c(NA, TechSup.Instr[-length(TechSup.Instr)]))
+
+# FlowM <- ddply(FlowM, .(ISO), transform, SpatialLag.Barrier.removal.Lag = c(NA, SpatialLag.Barrier.removal[-length(SpatialLag.Barrier.removal)]))
+# FlowM <- ddply(FlowM, .(ISO), transform, SpatialLag.Climate.strategy.Lag = c(NA, SpatialLag.Climate.strategy[-length(SpatialLag.Climate.strategy)]))
+# FlowM <- ddply(FlowM, .(ISO), transform, SpatialLag.Economic.instruments.Lag = c(NA, SpatialLag.Economic.instruments[-length(SpatialLag.Economic.instruments)]))
+# FlowM <- ddply(FlowM, .(ISO), transform, SpatialLag.Information.and.education.Lag = c(NA, SpatialLag.Information.and.education[-length(SpatialLag.Information.and.education)]))
+# FlowM <- ddply(FlowM, .(ISO), transform, SpatialLag.Policy.support.Lag = c(NA, SpatialLag.Policy.support[-length(SpatialLag.Policy.support)]))
+# FlowM <- ddply(FlowM, .(ISO), transform, SpatialLag.Regulatory.Instruments.Lag = c( NA, SpatialLag.Regulatory.Instruments[-length(SpatialLag.Regulatory.Instruments)]))
+# FlowM <- ddply(FlowM, .(ISO), transform, SpatialLag.RDD.Lag = c( NA, SpatialLag.RDD[-length(SpatialLag.RDD)]))
+# FlowM <- ddply(FlowM, .(ISO), transform, SpatialLag.Target.Lag = c( NA, SpatialLag.Target[-length(SpatialLag.Target)]))
+# FlowM <- ddply(FlowM, .(ISO), transform, SpatialLag.Voluntary.approaches.Lag = c( NA, SpatialLag.Voluntary.approaches[-length(SpatialLag.Voluntary.approaches)]))
+
+FlowM <- ddply(FlowM, .(ISO), transform, SpatialLag.Market.Instr.Lag = c( NA, SpatialLag.Market.Instr[-length(SpatialLag.Market.Instr)]))
+FlowM <- ddply(FlowM, .(ISO), transform, SpatialLag.Non.Market.Instr.Lag = c( NA, SpatialLag.Non.Market.Instr[-length(SpatialLag.Non.Market.Instr)]))
+FlowM <- ddply(FlowM, .(ISO), transform, SpatialLag.TechSup.Instr.Lag = c( NA, SpatialLag.TechSup.Instr[-length(SpatialLag.TechSup.Instr)]))
+
+FlowM$NorthSouth<-matrix(0,length(FlowM$ISO),1)
+FlowM$NorthSouth[which(FlowM$ISO %in% c("FRA","GBR","DEU","JPN", "KOR","USA","AUS","ITA","ESP", "CAN"))]<-1
+table(FlowM$NorthSouth)
+summary(FlowM$NorthSouth)
+
+colnames(FlowM)[12]<-"Gini"
+keyperiod<-c(2006,2007,2008,2009,2010,2011,2012,2013,2014,2015,2016,2017,2018,2019,2020)
+
+```
+
+
+
+```{r Flow, echo=FALSE, warning=FALSE}
+
+# library(AER)
+# dispersiontest(reg_p,trafo=1) 
+# check_overdispersion(reg_p)
+#following
+#https://stats.stackexchange.com/questions/127505/compare-poisson-and-negative-binomial-regression-with-lr-test
+# reg_nb <- pglm(Count ~ SpatialLag.Count.Lag + yrsoffc + eiec + gov_left + gov_right + Corruption + GovEffectiveness + GDP_PC  + GHG_Int + Gini, data=FlowM, index=c("ISO","Year"), model = "within", effect = "twoways", family = negbin())
+# 
+# reg_p <- pglm(Count ~ SpatialLag.Count.Lag + yrsoffc + eiec + gov_left + gov_right + Corruption + GovEffectiveness + GDP_PC  + GHG_Int + Gini, data=FlowM, index=c("ISO","Year"), model = "within", effect = "twoways", family = poisson)
+# 
+# pchisq(2 * (logLik(reg_nb) - logLik(reg_p)), df = 1, lower.tail = FALSE)
+# 
+# 2 * (logLik(reg_nb) - logLik(reg_p))
+# logLik(reg_p)
+# logLik(reg_nb)
+# 2 * (logLik(reg_nb) - logLik(reg_p))
+# as.numeric(2 * (logLik(reg_nb) - logLik(reg_p)))
+# 
+# 
+# stat <- as.numeric(2 * (logLik(reg_nb) - logLik(reg_p)))
+# pchisq(stat, df = 11 - 10, lower.tail = FALSE)
+
+#following https://rdrr.io/cran/poisFErobust/man/pois.fe.robust.html
+library("poisFErobust")
+library("data.table")
+
+#doo all the tests on the reduced sample without NAs to ensure consistency
+dataCSE <- as.data.table(FlowM[,c(1,2,3,4,5,6,7,8,10,11,12,13,15,16,17,18,  63,   64:71  )])
+dataCSE <- na.omit(dataCSE)
+
+# Panel
+reg_p <- pglm(Count ~ SpatialLag.Count.Lag + yrsoffc + eiec + gov_left + gov_right + GovEffectiveness + GDP_PC  + GHG_Int + Gini, data=dataCSE[which(dataCSE$Year %in% keyperiod),], index=c("ISO","Year"), model = "within", effect = "twoways", family = poisson)
+res <- summary(reg_p)
+res
+
+
+res<-pois.fe.robust(outcome="Count", xvars=c("SpatialLag.Count.Lag", "yrsoffc", "eiec", "gov_left","gov_right", "GovEffectiveness", "GDP_PC", "GHG_Int", "Gini"), group.name="ISO", data=dataCSE[which(dataCSE$Year %in% keyperiod),], qcmle.coefs = NULL, allow.set.key = FALSE, index.name = NULL)
+
+#write a function to not repeat the lines every time
+pois.fe.output <- function(res){
+  
+coef <- res$coefficients
+hecse <- res$se.robust
+tstat <- abs(res$coefficients)/res$se.robust
+pval <- 2*(1-pnorm(tstat))
+restab <- data.frame(coef,hecse,pval)
+restab
+}
+pois.fe.output(res)
+write.csv(pois.fe.output(res), file="D:/Projects/2_Working Papers/Margherita/Revision NComm 2025/06-20/ResCountAggregate_CPDEPS.csv")
+# 
+# 
+# 
+# reg_pformula <- function(factors) {
+#     if (length(factors) == 0) return(0)
+#     formula <- paste("Count ~", paste(factors, collapse = "+"))
+#     m <- pglm(formula, data = dataCSE, index=c("ISO","Year"), model = "within", effect = "twoways", family = poisson)
+#     fit0 =  pglm(Count ~ 1, data=dataCSE,  family = poisson)
+# pseudoR2 = as.numeric(1 - logLik(m)/logLik(fit0))
+# pseudoR2
+# }
+# Rpseudo<-reg_pformula(c("SpatialLag.Count.Lag", "yrsoffc", "eiec", "gov_left", "gov_right", "GovEffectiveness", "GDP_PC", "GHG_Int", "Gini"))
+# test<-shapley(reg_pformula, c("SpatialLag.Count.Lag", "yrsoffc", "eiec", "gov_left", "gov_right", "GovEffectiveness", "GDP_PC", "GHG_Int", "Gini"), silent = TRUE)
+# test$value<-test$value
+# print(Rpseudo)
+# test
+
+
+reg_p <- pglm(Count ~ Count.Lag + SpatialLag.Count.Lag + yrsoffc + eiec + gov_left + gov_right + GovEffectiveness + GDP_PC  + GHG_Int + Gini, data=dataCSE[which(dataCSE$Year %in% keyperiod),], index=c("ISO","Year"), model = "within", effect = "twoways", family = poisson)
+res <- summary(reg_p)
+res
+
+res<-pois.fe.robust(outcome="Count", xvars=c("Count.Lag","SpatialLag.Count.Lag", "yrsoffc", "eiec", "gov_left","gov_right", "GovEffectiveness", "GDP_PC", "GHG_Int", "Gini"), group.name="ISO", data=dataCSE[which(dataCSE$Year %in% keyperiod),], qcmle.coefs = NULL, allow.set.key = FALSE, index.name = NULL)
+
+pois.fe.output(res)
+write.csv(pois.fe.output(res), file="D:/Projects/2_Working Papers/Margherita/Revision NComm 2025/06-20/ResCountAggregate_CPDEPS_lag.csv")
+# 
+# 
+# reg_pformula <- function(factors) {
+#     if (length(factors) == 0) return(0)
+#     formula <- paste("Count ~", paste(factors, collapse = "+"))
+#     m <- pglm(formula, data = dataCSE, index=c("ISO","Year"), model = "within", effect = "twoways", family = poisson)
+#     fit0 =  pglm(Count ~ 1, data=dataCSE,  family = poisson)
+# pseudoR2 = as.numeric(1 - logLik(m)/logLik(fit0))
+# pseudoR2
+# }
+# Rpseudo<-reg_pformula(c("Count.Lag","SpatialLag.Count.Lag", "yrsoffc", "eiec", "gov_left", "gov_right", "GovEffectiveness", "GDP_PC", "GHG_Int", "Gini"))
+# test<-shapley(reg_pformula, c("Count.Lag","SpatialLag.Count.Lag", "yrsoffc", "eiec", "gov_left", "gov_right", "GovEffectiveness", "GDP_PC", "GHG_Int", "Gini"), silent = TRUE)
+# test$value<-test$value
+# print(Rpseudo)
+# test
+
+
+
+
+
+# Panel Market Instr
+reg_p <- pglm(Market.Instr ~ SpatialLag.Market.Instr.Lag + yrsoffc + eiec + gov_left + gov_right + GovEffectiveness + GDP_PC  + GHG_Int + Gini, data=dataCSE[which(dataCSE$Year %in% keyperiod),], index=c("ISO","Year"), model = "within", effect = "twoways", family = poisson)
+res <- summary(reg_p)
+res
+
+res<-pois.fe.robust(outcome="Market.Instr", xvars=c("SpatialLag.Market.Instr.Lag", "yrsoffc", "eiec", "gov_left","gov_right", "GovEffectiveness", "GDP_PC", "GHG_Int", "Gini"), group.name="ISO", data=dataCSE[which(dataCSE$Year %in% keyperiod),], qcmle.coefs = NULL, allow.set.key = FALSE, index.name = NULL)
+pois.fe.output(res)
+
+# 
+write.csv(pois.fe.output(res), file="D:/Projects/2_Working Papers/Margherita/Revision NComm 2025/06-20/ResMarket.InstrAggregate_CPDEPS.csv")
+# 
+# 
+# reg_pformula <- function(factors) {
+#     if (length(factors) == 0) return(0)
+#     formula <- paste("Market.Instr ~", paste(factors, collapse = "+"))
+#     m <- pglm(formula, data = dataCSE, index=c("ISO","Year"), model = "within", effect = "twoways", family = poisson)
+#     fit0 =  pglm(Market.Instr ~ 1, data=dataCSE,  family = poisson)
+# pseudoR2 = as.numeric(1 - logLik(m)/logLik(fit0))
+# pseudoR2
+# }
+# Rpseudo<-reg_pformula(c("SpatialLag.Market.Instr.Lag", "yrsoffc", "eiec", "gov_left", "gov_right",  "GovEffectiveness", "GDP_PC", "GHG_Int", "Gini"))
+# test<-shapley(reg_pformula, c("SpatialLag.Market.Instr.Lag", "yrsoffc", "eiec", "gov_left", "gov_right", "GovEffectiveness", "GDP_PC", "GHG_Int", "Gini"), silent = TRUE)
+# test$value<-test$value
+# print(Rpseudo)
+# test
+
+
+
+# Panel Market Instr
+reg_p <- pglm(Market.Instr ~ Market.Instr.Lag + SpatialLag.Market.Instr.Lag + yrsoffc + eiec + gov_left + gov_right + GovEffectiveness + GDP_PC  + GHG_Int + Gini, data=dataCSE[which(dataCSE$Year %in% keyperiod),], index=c("ISO","Year"), model = "within", effect = "twoways", family = poisson)
+res <- summary(reg_p)
+res
+
+res<-pois.fe.robust(outcome="Market.Instr", xvars=c("Market.Instr.Lag","SpatialLag.Market.Instr.Lag", "yrsoffc", "eiec", "gov_left","gov_right", "GovEffectiveness", "GDP_PC", "GHG_Int", "Gini"), group.name="ISO", data=dataCSE[which(dataCSE$Year %in% keyperiod),], qcmle.coefs = NULL, allow.set.key = FALSE, index.name = NULL)
+pois.fe.output(res)
+write.csv(pois.fe.output(res), file="D:/Projects/2_Working Papers/Margherita/Revision NComm 2025/06-20/ResMarket.InstrAggregate_CPDEPS_lag.csv")
+# 
+# 
+# reg_pformula <- function(factors) {
+#     if (length(factors) == 0) return(0)
+#     formula <- paste("Market.Instr ~", paste(factors, collapse = "+"))
+#     m <- pglm(formula, data = dataCSE, index=c("ISO","Year"), model = "within", effect = "twoways", family = poisson)
+#     fit0 =  pglm(Market.Instr ~ 1, data=dataCSE,  family = poisson)
+# pseudoR2 = as.numeric(1 - logLik(m)/logLik(fit0))
+# pseudoR2
+# }
+# Rpseudo<-reg_pformula(c("Market.Instr.Lag", "SpatialLag.Market.Instr.Lag", "yrsoffc", "eiec", "gov_left", "gov_right", "GovEffectiveness", "GDP_PC", "GHG_Int", "Gini"))
+# test<-shapley(reg_pformula, c("Market.Instr.Lag", "SpatialLag.Market.Instr.Lag", "yrsoffc", "eiec", "gov_left", "gov_right", "GovEffectiveness", "GDP_PC", "GHG_Int", "Gini"), silent = TRUE)
+# test$value<-test$value
+# print(Rpseudo)
+# test
+
+
+
+
+
+
+
+
+
+
+# Panel Non.Market Instr
+reg_p <- pglm(Non.Market.Instr ~ SpatialLag.Non.Market.Instr.Lag + yrsoffc + eiec + gov_left + gov_right + GovEffectiveness + GDP_PC  + GHG_Int + Gini, data=dataCSE[which(dataCSE$Year %in% keyperiod),], index=c("ISO","Year"), model = "within", effect = "twoways", family = poisson)
+res <- summary(reg_p)
+res
+
+res<-pois.fe.robust(outcome="Non.Market.Instr", xvars=c("SpatialLag.Non.Market.Instr.Lag", "yrsoffc", "eiec", "gov_left","gov_right", "GovEffectiveness", "GDP_PC", "GHG_Int", "Gini"), group.name="ISO", data=dataCSE[which(dataCSE$Year %in% keyperiod),], qcmle.coefs = NULL, allow.set.key = FALSE, index.name = NULL)
+pois.fe.output(res)
+# 
+write.csv(pois.fe.output(res), file="D:/Projects/2_Working Papers/Margherita/Revision NComm 2025/06-20/ResNon.Market.InstrAggregate_CPDEPS.csv")
+# 
+# 
+# reg_pformula <- function(factors) {
+#     if (length(factors) == 0) return(0)
+#     formula <- paste("Non.Market.Instr ~", paste(factors, collapse = "+"))
+#     m <- pglm(formula, data = dataCSE, index=c("ISO","Year"), model = "within", effect = "twoways", family = poisson)
+#     fit0 =  pglm(Non.Market.Instr ~ 1, data=dataCSE,  family = poisson)
+# pseudoR2 = as.numeric(1 - logLik(m)/logLik(fit0))
+# pseudoR2
+# }
+# Rpseudo<-reg_pformula(c("SpatialLag.Non.Market.Instr.Lag", "yrsoffc", "eiec", "gov_left", "gov_right", "GovEffectiveness", "GDP_PC", "GHG_Int", "Gini"))
+# test<-shapley(reg_pformula, c("SpatialLag.Non.Market.Instr.Lag", "yrsoffc", "eiec", "gov_left", "gov_right", "GovEffectiveness", "GDP_PC", "GHG_Int", "Gini"), silent = TRUE)
+# test$value<-test$value
+# print(Rpseudo)
+# test
+
+
+
+
+# Panel Non.Market Instr
+reg_p <- pglm(Non.Market.Instr ~ Non.Market.Instr.Lag + SpatialLag.Non.Market.Instr.Lag + yrsoffc + eiec + gov_left + gov_right + GovEffectiveness + GDP_PC  + GHG_Int + Gini, data=dataCSE[which(dataCSE$Year %in% keyperiod),], index=c("ISO","Year"), model = "within", effect = "twoways", family = poisson)
+res <- summary(reg_p)
+res
+
+res<-pois.fe.robust(outcome="Non.Market.Instr", xvars=c("Non.Market.Instr.Lag","SpatialLag.Non.Market.Instr.Lag", "yrsoffc", "eiec", "gov_left","gov_right", "GovEffectiveness", "GDP_PC", "GHG_Int", "Gini"), group.name="ISO", data=dataCSE[which(dataCSE$Year %in% keyperiod),], qcmle.coefs = NULL, allow.set.key = FALSE, index.name = NULL)
+pois.fe.output(res)
+write.csv(pois.fe.output(res), file="D:/Projects/2_Working Papers/Margherita/Revision NComm 2025/06-20/ResNon.Market.InstrAggregate_CPDEPS_lag.csv")
+# 
+# 
+# reg_pformula <- function(factors) {
+#     if (length(factors) == 0) return(0)
+#     formula <- paste("Non.Market.Instr ~", paste(factors, collapse = "+"))
+#     m <- pglm(formula, data = dataCSE, index=c("ISO","Year"), model = "within", effect = "twoways", family = poisson)
+#     fit0 =  pglm(Non.Market.Instr ~ 1, data=dataCSE,  family = poisson)
+# pseudoR2 = as.numeric(1 - logLik(m)/logLik(fit0))
+# pseudoR2
+# }
+# Rpseudo<-reg_pformula(c("Non.Market.Instr.Lag", "SpatialLag.Non.Market.Instr.Lag", "yrsoffc", "eiec", "gov_left", "gov_right", "GovEffectiveness", "GDP_PC", "GHG_Int", "Gini"))
+# test<-shapley(reg_pformula, c("Non.Market.Instr.Lag", "SpatialLag.Non.Market.Instr.Lag", "yrsoffc", "eiec", "gov_left", "gov_right", "GovEffectiveness", "GDP_PC", "GHG_Int", "Gini"), silent = TRUE)
+# test$value<-test$value
+# print(Rpseudo)
+# test
+
+
+
+
+
+
+# Panel Non.Market Instr
+reg_p <- pglm(TechSup.Instr ~ SpatialLag.TechSup.Instr.Lag + yrsoffc + eiec + gov_left + gov_right + GovEffectiveness + GDP_PC  + GHG_Int + Gini, data=dataCSE[which(dataCSE$Year %in% keyperiod),], index=c("ISO","Year"), model = "within", effect = "twoways", family = poisson)
+res <- summary(reg_p)
+res
+
+
+res<-pois.fe.robust(outcome="TechSup.Instr", xvars=c("SpatialLag.TechSup.Instr.Lag", "yrsoffc", "eiec", "gov_left","gov_right", "GovEffectiveness", "GDP_PC", "GHG_Int", "Gini"), group.name="ISO", data=dataCSE[which(dataCSE$Year %in% keyperiod),], qcmle.coefs = NULL, allow.set.key = FALSE, index.name = NULL)
+pois.fe.output(res)
+write.csv(pois.fe.output(res), file="D:/Projects/2_Working Papers/Margherita/Revision NComm 2025/06-20/ResTechSup.InstrAggregate_CPDEPS.csv")
+# 
+# 
+# reg_pformula <- function(factors) {
+#     if (length(factors) == 0) return(0)
+#     formula <- paste("TechSup.Instr ~", paste(factors, collapse = "+"))
+#     m <- pglm(formula, data = dataCSE, index=c("ISO","Year"), model = "within", effect = "twoways", family = poisson)
+#     fit0 =  pglm(TechSup.Instr ~ 1, data=dataCSE,  family = poisson)
+# pseudoR2 = as.numeric(1 - logLik(m)/logLik(fit0))
+# pseudoR2
+# }
+# Rpseudo<-reg_pformula(c("SpatialLag.TechSup.Instr.Lag", "yrsoffc", "eiec", "gov_left", "gov_right", "GovEffectiveness", "GDP_PC", "GHG_Int", "Gini"))
+# test<-shapley(reg_pformula, c("SpatialLag.TechSup.Instr.Lag", "yrsoffc", "eiec", "gov_left", "gov_right", "GovEffectiveness", "GDP_PC", "GHG_Int", "Gini"), silent = TRUE)
+# test$value<-test$value
+# print(Rpseudo)
+# test
+
+
+
+
+# Panel Non.Market Instr
+reg_p <- pglm(TechSup.Instr ~ TechSup.Instr.Lag + SpatialLag.TechSup.Instr.Lag + yrsoffc + eiec + gov_left + gov_right + GovEffectiveness + GDP_PC  + GHG_Int + Gini, data=dataCSE[which(dataCSE$Year %in% keyperiod),], index=c("ISO","Year"), model = "within", effect = "twoways", family = poisson)
+res <- summary(reg_p)
+res
+
+res<-pois.fe.robust(outcome="TechSup.Instr", xvars=c("TechSup.Instr.Lag","SpatialLag.TechSup.Instr.Lag", "yrsoffc", "eiec", "gov_left","gov_right", "GovEffectiveness", "GDP_PC", "GHG_Int", "Gini"), group.name="ISO", data=dataCSE[which(dataCSE$Year %in% keyperiod),], qcmle.coefs = NULL, allow.set.key = FALSE, index.name = NULL)
+pois.fe.output(res)
+# 
+write.csv(pois.fe.output(res), file="D:/Projects/2_Working Papers/Margherita/Revision NComm 2025/06-20/ResTechSup.InstrAggregate_CPDEPS_lag.csv")
+# 
+# 
+# reg_pformula <- function(factors) {
+#     if (length(factors) == 0) return(0)
+#     formula <- paste("TechSup.Instr ~", paste(factors, collapse = "+"))
+#     m <- pglm(formula, data = dataCSE, index=c("ISO","Year"), model = "within", effect = "twoways", family = poisson)
+#     fit0 =  pglm(TechSup.Instr ~ 1, data=dataCSE,  family = poisson)
+# pseudoR2 = as.numeric(1 - logLik(m)/logLik(fit0))
+# pseudoR2
+# }
+# Rpseudo<-reg_pformula(c("TechSup.Instr.Lag", "SpatialLag.TechSup.Instr.Lag", "yrsoffc", "eiec", "gov_left", "gov_right", "GovEffectiveness", "GDP_PC", "GHG_Int", "Gini"))
+# test<-shapley(reg_pformula, c("TechSup.Instr.Lag", "SpatialLag.TechSup.Instr.Lag", "yrsoffc", "eiec", "gov_left", "gov_right", "GovEffectiveness", "GDP_PC", "GHG_Int", "Gini"), silent = TRUE)
+# test$value<-test$value
+# print(Rpseudo)
+# test
+
+
+
+
+```
+
+
+
+```{r EPS, echo=FALSE, warning=FALSE}
+# # 
+# # Flow$EPS<-as.numeric(Flow$EPS)
+# # FlowM$EPS<-as.numeric(FlowM$EPS)
+# 
+# EPSplot<-matrix(0,25,23)
+# EPSplot<-as.data.frame(EPSplot)
+# colnames(EPSplot)<-c("Year", "AUS", "BRA", "CAN", "CHE", "CHL","CHN", "DEU", "ESP", "FRA", "GBR", "IDN", "IND", "ITA", "JPN", "KOR", "MEX", "NOR", "NZL", "RUS", "TUR", "USA", "ZAF")
+# EPSplot$Year<-1996:2020
+# 
+# j<-1
+# for (i in unique(Flow$ISO)){
+#   
+#   EPSplot[,(j+1)]<-Flow$EPS_MKT[(25*(j-1)+1):(25*j)]
+# j<-j+1
+# }
+# library(RColorBrewer)
+# set.seed(333)
+# n <- 23
+# qual_col_pals = brewer.pal.info[brewer.pal.info$category == 'qual',]
+# col_vector = unlist(mapply(brewer.pal, qual_col_pals$maxcolors, rownames(qual_col_pals)))
+# col_vector=sample(col_vector, n)
+# countries <-c("AUS", "BRA", "CAN", "CHE", "CHL","CHN", "DEU", "ESP", "FRA", "GBR", "IDN", "IND", "ITA", "JPN", "KOR", "MEX", "NOR", "NZL", "RUS", "TUR", "USA", "ZAF")
+# 
+# # matplot(EPSplot[,1], EPSplot[,c(2:23)], type = "l", lty = 1,
+# #         xlab = "Year", col=col_vector,
+# #         ylab = "EPS", main = "EPS across countries")
+# # legend("topleft", legend =countries,
+# #        col = col_vector, lty = 1)
+# # 
+# # EPSplot<-EPSplot[,-c(2,22)]
+# # countries<-countries[-c(2,22)]
+# par(mfrow = c(5,5) ,mar=c(2,2,1.5,1))
+# for (j in 1:22){
+#   matplot(EPSplot[,1], EPSplot[,c(j+1)], type = "l", lty = 1, 
+#         col=col_vector[j],xlab="",
+#         ylab = "EPS", main = countries[j],
+#         ylim=c(0,5))
+# }
+# 
+# 
+# 
+# ###EPS CC
+# EPS_plot<-matrix(0,25,23)
+# EPS_plot<-as.data.frame(EPS_plot)
+# colnames(EPS_plot)<-c("Year", "AUS", "BRA", "CAN", "CHE", "CHL","CHN", "DEU", "ESP", "FRA", "GBR", "IDN", "IND", "ITA", "JPN", "KOR", "MEX", "NOR", "NZL", "RUS", "TUR", "USA", "ZAF")
+# EPS_plot$Year<-1996:2020
+# 
+# par(mfrow = c(5,5) ,mar=c(2,2,1.5,1))
+# 
+# j<-1
+# for (i in unique(Flow$ISO)){
+#   
+#   EPS_plot[,(j+1)]<-Flow$EPS[(25*(j-1)+1):(25*j)]
+# j<-j+1
+# }
+# 
+# # EPS_plot<-EPS_plot[,-c(2,22)]
+# 
+# for (j in 1:22){
+#   matplot(EPS_plot[,1], EPS_plot[,c(j+1)], type = "l", lty = 1, 
+#         col=col_vector[j],
+#         ylab = "EPS", main = countries[j],
+#         ylim=c(0,5))
+# }
+# 
+# 
+# 
+
+#Panel
+FlowM <- ddply(FlowM, .(ISO), transform, EPS.Lag = c(NA, EPS[-length(EPS)]))
+FlowM <- ddply(FlowM, .(ISO), transform, SpatialLag.EPS.Lag = c(NA, SpatialLag.EPS[-length(SpatialLag.EPS)]))
+FlowM <- ddply(FlowM, .(ISO), transform, SpatialLag.EPS_MKT.Lag = c(NA, SpatialLag.EPS_MKT[-length(SpatialLag.EPS_MKT)]))
+FlowM <- ddply(FlowM, .(ISO), transform, SpatialLag.EPS_NMKT.Lag = c(NA, SpatialLag.EPS_NMKT[-length(SpatialLag.EPS_NMKT)]))
+FlowM <- ddply(FlowM, .(ISO), transform, SpatialLag.TECHSUP.Lag = c(NA, SpatialLag.TECHSUP[-length(SpatialLag.TECHSUP)]))
+
+
+# 
+# FlowM <- ddply(FlowM, .(ISO), transform, EPS_CC.Lag = c(NA, EPS_CC[-length(EPS_CC)]))
+# FlowM <- ddply(FlowM, .(ISO), transform, SpatialLag.EPS_CC.Lag = c(NA, SpatialLag.EPS_CC[-length(SpatialLag.EPS_CC)]))
+# FlowM <- ddply(FlowM, .(ISO), transform, SpatialLag.EPS_MKT_CC.Lag = c(NA, SpatialLag.EPS_MKT_CC[-length(SpatialLag.EPS_MKT_CC)]))
+# FlowM <- ddply(FlowM, .(ISO), transform, SpatialLag.EPS_NMKT_CC.Lag = c(NA, SpatialLag.EPS_NMKT_CC[-length(SpatialLag.EPS_NMKT_CC)]))
+# 
+# FlowM <- ddply(FlowM, .(ISO), transform, SpatialLag.EPS_CC_Difference.Lag = c(NA, SpatialLag.EPS_CC_Difference[-length(SpatialLag.EPS_CC_Difference)]))
+
+
+
+
+regEPS <- plm(EPS ~ EPS.Lag + SpatialLag.EPS.Lag + yrsoffc + eiec + gov_left + gov_right + GovEffectiveness + GDP_PC + GHG_Int + Gini, data=FlowM[which(FlowM$Year %in% keyperiod),], index=c("ISO","Year"), model = "within", effect = "twoways")
+res <- summary(regEPS)
+res
+res_robust<-coeftest(regEPS, vcov.=vcovHC(regEPS, method="white2", type="HC1"))
+res_robust
+
+write.csv(res_robust, file="D:/Projects/2_Working Papers/Margherita/Revision NComm 2025/06-20/EPS_CPDEPS_lag.csv")
+
+
+# 
+# 
+# reg_pformula <- function(factors) {
+#     if (length(factors) == 0) return(0)
+#     formula <- paste("EPS ~", paste(factors, collapse = "+"))
+#     m <- plm(formula, data = FlowM, index=c("ISO","Year"), model = "within", effect = "twoways")
+#     summary(m)$r.squared[1]
+# }
+# Rpseudo<-reg_pformula(c("EPS.Lag", "SpatialLag.EPS.Lag", "yrsoffc", "eiec", "gov_left", "gov_right",  "GovEffectiveness", "GDP_PC", "GHG_Int", "Gini"))
+# test<-shapley(reg_pformula, c("EPS.Lag", "SpatialLag.EPS.Lag", "yrsoffc", "eiec", "gov_left", "gov_right", "GovEffectiveness", "GDP_PC", "GHG_Int", "Gini"), silent = TRUE)
+# test$value<-test$value
+# print(Rpseudo)
+# test
+
+
+
+#FlowM <- ddply(FlowM, .(ISO), transform, EPS_Difference.Lag = c(NA, EPS_Difference[-length(EPS_Difference)]))
+FlowM <- ddply(FlowM, .(ISO), transform, SpatialLag.EPS_Difference.Lag = c(NA, SpatialLag.EPS_Difference[-length(SpatialLag.EPS_Difference)]))
+FlowM$EPS_Difference<-as.numeric(FlowM$EPS_Difference)
+
+
+regEPSd <- plm(EPS_Difference ~ SpatialLag.EPS_Difference.Lag + yrsoffc + eiec + gov_left + gov_right + GovEffectiveness + GDP_PC + GHG_Int + Gini, data=FlowM[which(FlowM$Year %in% keyperiod),], index=c("ISO","Year"), model = "within", effect = "twoways")
+res <- summary(regEPSd)
+res
+res_robust<-coeftest(regEPSd, vcov.=vcovHC(regEPSd, method="white2", type="HC1"))
+res_robust
+# 
+write.csv(res_robust, file="D:/Projects/2_Working Papers/Margherita/Revision NComm 2025/06-20/EPS_Difference_CPDEPS.csv")
+# 
+# reg_pformula <- function(factors) {
+#     if (length(factors) == 0) return(0)
+#     formula <- paste("EPS_Difference ~", paste(factors, collapse = "+"))
+#     m <- plm(formula, data = FlowM, index=c("ISO","Year"), model = "within", effect = "twoways")
+#     summary(m)$r.squared[1]
+# }
+# Rpseudo<-reg_pformula(c("SpatialLag.EPS_Difference.Lag", "yrsoffc", "eiec", "gov_left", "gov_right",  "GovEffectiveness", "GDP_PC", "GHG_Int", "Gini"))
+# test<-shapley(reg_pformula, c("SpatialLag.EPS_Difference.Lag", "yrsoffc", "eiec", "gov_left", "gov_right",  "GovEffectiveness", "GDP_PC", "GHG_Int", "Gini"), silent = TRUE)
+# test$value<-test$value
+# print(Rpseudo)
+# test
+
+
+```
+
+
+```{r EPS MKT, echo=FALSE, warning=FALSE}
+
+
+FlowM <- ddply(FlowM, .(ISO), transform, EPS_MKT.Lag = c(NA, EPS_MKT[-length(EPS_MKT)]))
+
+#Panel
+regEPS_MKT <-plm(EPS_MKT ~ EPS_MKT.Lag + SpatialLag.EPS_MKT.Lag + yrsoffc + eiec + gov_left + gov_right +  GovEffectiveness + GDP_PC + GHG_Int + Gini, data=FlowM[which(FlowM$Year %in% keyperiod),], index=c("ISO","Year"), model = "within", effect = "twoways")
+res <- summary(regEPS_MKT)
+res
+res_robust<-coeftest(regEPS_MKT, vcov.=vcovHC(regEPS_MKT, method="white2", type="HC1"))
+res_robust
+# 
+write.csv(res_robust, file="D:/Projects/2_Working Papers/Margherita/Revision NComm 2025/06-20/EPS_MKT_CPDEPS_lag.csv")
+# 
+# 
+# 
+# reg_pformula <- function(factors) {
+#     if (length(factors) == 0) return(0)
+#     formula <- paste("EPS_MKT ~", paste(factors, collapse = "+"))
+#     m <- plm(formula, data = FlowM, index=c("ISO","Year"), model = "within", effect = "twoways")
+#     summary(m)$r.squared[1]
+# }
+# Rpseudo<-reg_pformula(c("EPS_MKT.Lag", "SpatialLag.EPS_MKT.Lag", "yrsoffc", "eiec", "gov_left", "gov_right", "GovEffectiveness", "GDP_PC", "GHG_Int", "Gini"))
+# test<-shapley(reg_pformula, c("EPS_MKT.Lag", "SpatialLag.EPS_MKT.Lag", "yrsoffc", "eiec", "gov_left", "gov_right", "GovEffectiveness", "GDP_PC", "GHG_Int", "Gini"), silent = TRUE)
+# test$value<-test$value
+# print(Rpseudo)
+# test
+
+
+#FlowM <- ddply(FlowM, .(ISO), transform, EPS_Difference.Lag = c(NA, EPS_Difference[-length(EPS_Difference)]))
+FlowM <- ddply(FlowM, .(ISO), transform, SpatialLag.EPS_MKT_Difference.Lag = c(NA, SpatialLag.EPS_MKT_Difference[-length(SpatialLag.EPS_MKT_Difference)]))
+FlowM$EPS_MKT_Difference<-as.numeric(FlowM$EPS_MKT_Difference)
+
+
+
+regEPS_MKTd <- plm(EPS_MKT_Difference ~ SpatialLag.EPS_MKT_Difference.Lag + yrsoffc + eiec + gov_left + gov_right + GovEffectiveness + GDP_PC + GHG_Int + Gini, data=FlowM[which(FlowM$Year %in% keyperiod),], index=c("ISO","Year"), model = "within", effect = "twoways")
+res <- summary(regEPS_MKTd)
+res
+res_robust<-coeftest(regEPS_MKTd, vcov.=vcovHC(regEPS_MKTd, method="white2", type="HC1"))
+res_robust
+# 
+write.csv(res_robust, file="D:/Projects/2_Working Papers/Margherita/Revision NComm 2025/06-20/EPS_MKT_Difference_CPDEPS.csv")
+# 
+# reg_pformula <- function(factors) {
+#     if (length(factors) == 0) return(0)
+#     formula <- paste("EPS_MKT_Difference ~", paste(factors, collapse = "+"))
+#     m <- plm(formula, data = FlowM, index=c("ISO","Year"), model = "within", effect = "twoways")
+#     summary(m)$r.squared[1]
+# }
+# Rpseudo<-reg_pformula(c("SpatialLag.EPS_MKT_Difference.Lag", "yrsoffc", "eiec", "gov_left", "gov_right",  "GovEffectiveness", "GDP_PC", "GHG_Int", "Gini"))
+# test<-shapley(reg_pformula, c("SpatialLag.EPS_MKT_Difference.Lag", "yrsoffc", "eiec", "gov_left", "gov_right", "GovEffectiveness", "GDP_PC", "GHG_Int", "Gini"), silent = TRUE)
+# test$value<-test$value
+# print(Rpseudo)
+# test
+
+```
+
+
+
+```{r EPS NMKT, echo=FALSE, warning=FALSE}
+
+FlowM <- ddply(FlowM, .(ISO), transform, EPS_NMKT.Lag = c(NA, EPS_NMKT[-length(EPS_NMKT)]))
+# 
+# #CC
+# FlowM <- ddply(FlowM, .(ISO), transform, EPS_NMKT_CC.Lag = c(NA, EPS_NMKT_CC[-length(EPS_NMKT_CC)]))
+
+#Panel
+regEPS_NMKT <-plm(EPS_NMKT ~ EPS_NMKT.Lag + SpatialLag.EPS_NMKT.Lag + yrsoffc + eiec + gov_left + gov_right + GovEffectiveness + GDP_PC + GHG_Int + Gini, data=FlowM[which(FlowM$Year %in% keyperiod),], index=c("ISO","Year"), model = "within", effect = "twoways")
+res <- summary(regEPS_NMKT)
+res
+res_robust<-coeftest(regEPS_NMKT, vcov.=vcovHC(regEPS_NMKT, method="white2", type="HC1"))
+res_robust
+# 
+write.csv(res_robust, file="D:/Projects/2_Working Papers/Margherita/Revision NComm 2025/06-20/EPS_NMKT_CPDEPS_lag.csv")
+# 
+# reg_pformula <- function(factors) {
+#     if (length(factors) == 0) return(0)
+#     formula <- paste("EPS_NMKT ~", paste(factors, collapse = "+"))
+#     m <- plm(formula, data = FlowM, index=c("ISO","Year"), model = "within", effect = "twoways")
+#     summary(m)$r.squared[1]
+# }
+# Rpseudo<-reg_pformula(c("EPS_NMKT.Lag","SpatialLag.EPS_NMKT.Lag", "yrsoffc", "eiec", "gov_left", "gov_right", "GovEffectiveness", "GDP_PC", "GHG_Int", "Gini"))
+# test<-shapley(reg_pformula, c("EPS_NMKT.Lag","SpatialLag.EPS_NMKT.Lag", "yrsoffc", "eiec", "gov_left", "gov_right", "GovEffectiveness", "GDP_PC", "GHG_Int", "Gini"), silent = TRUE)
+# test$value<-test$value
+# print(Rpseudo)
+# test
+
+
+
+#FlowM <- ddply(FlowM, .(ISO), transform, EPS_Difference.Lag = c(NA, EPS_Difference[-length(EPS_Difference)]))
+FlowM <- ddply(FlowM, .(ISO), transform, SpatialLag.EPS_NMKT_Difference.Lag = c(NA, SpatialLag.EPS_NMKT_Difference[-length(SpatialLag.EPS_NMKT_Difference)]))
+FlowM$EPS_NMKT_Difference<-as.numeric(FlowM$EPS_NMKT_Difference)
+
+
+
+regEPS_NMKTd <- plm(EPS_NMKT_Difference ~ SpatialLag.EPS_NMKT_Difference.Lag + yrsoffc + eiec + gov_left + gov_right + GovEffectiveness + GDP_PC + GHG_Int + Gini, data=FlowM[which(FlowM$Year %in% keyperiod),], index=c("ISO","Year"), model = "within", effect = "twoways")
+res <- summary(regEPS_NMKTd)
+res
+res_robust<-coeftest(regEPS_NMKTd, vcov.=vcovHC(regEPS_NMKTd, method="white2", type="HC1"))
+res_robust
+# 
+write.csv(res_robust, file="D:/Projects/2_Working Papers/Margherita/Revision NComm 2025/06-20/EPS_NMKT_Difference_CPDEPS.csv")
+# 
+# reg_pformula <- function(factors) {
+#     if (length(factors) == 0) return(0)
+#     formula <- paste("EPS_NMKT_Difference ~", paste(factors, collapse = "+"))
+#     m <- plm(formula, data = FlowM, index=c("ISO","Year"), model = "within", effect = "twoways")
+#     summary(m)$r.squared[1]
+# }
+# Rpseudo<-reg_pformula(c("SpatialLag.EPS_NMKT_Difference.Lag", "yrsoffc", "eiec", "gov_left", "gov_right", "GovEffectiveness", "GDP_PC", "GHG_Int", "Gini"))
+# test<-shapley(reg_pformula, c("SpatialLag.EPS_NMKT_Difference.Lag", "yrsoffc", "eiec", "gov_left", "gov_right", "GovEffectiveness", "GDP_PC", "GHG_Int", "Gini"), silent = TRUE)
+# test$value<-test$value
+# print(Rpseudo)
+# test
+
+```
+
+```{r EPS TECHSUP, echo=FALSE, warning=FALSE}
+
+FlowM <- ddply(FlowM, .(ISO), transform, TECHSUP.Lag = c(NA, TECHSUP[-length(TECHSUP)]))
+
+
+#Panel
+regTECHSUP <-plm(TECHSUP ~ TECHSUP.Lag + SpatialLag.TECHSUP.Lag + yrsoffc + eiec + gov_left + gov_right + GovEffectiveness + GDP_PC + GHG_Int + Gini, data=FlowM[which(FlowM$Year %in% keyperiod),], index=c("ISO","Year"), model = "within", effect = "twoways")
+res <- summary(regTECHSUP)
+res
+res_robust<-coeftest(regTECHSUP, vcov.=vcovHC(regTECHSUP, method="white2", type="HC1"))
+res_robust
+# 
+write.csv(res_robust, file="D:/Projects/2_Working Papers/Margherita/Revision NComm 2025/06-20/EPS_TECHSUP_CPDEPS_lag.csv")
+# 
+# reg_pformula <- function(factors) {
+#     if (length(factors) == 0) return(0)
+#     formula <- paste("TECHSUP ~", paste(factors, collapse = "+"))
+#     m <- plm(formula, data = FlowM, index=c("ISO","Year"), model = "within", effect = "twoways")
+#     summary(m)$r.squared[1]
+# }
+# Rpseudo<-reg_pformula(c("TECHSUP.Lag","SpatialLag.TECHSUP.Lag", "yrsoffc", "eiec", "gov_left", "gov_right", "GovEffectiveness", "GDP_PC", "GHG_Int", "Gini"))
+# test<-shapley(reg_pformula, c("TECHSUP.Lag","SpatialLag.TECHSUP.Lag", "yrsoffc", "eiec", "gov_left", "gov_right", "GovEffectiveness", "GDP_PC", "GHG_Int", "Gini"), silent = TRUE)
+# test$value<-test$value
+# print(Rpseudo)
+# test
+
+
+
+
+#FlowM <- ddply(FlowM, .(ISO), transform, EPS_Difference.Lag = c(NA, EPS_Difference[-length(EPS_Difference)]))
+FlowM <- ddply(FlowM, .(ISO), transform, SpatialLag.TECHSUP_Difference.Lag = c(NA, SpatialLag.TECHSUP_Difference[-length(SpatialLag.TECHSUP_Difference)]))
+FlowM$TECHSUP_Difference<-as.numeric(FlowM$TECHSUP_Difference)
+
+
+
+regTECHSUPd <- plm(TECHSUP_Difference ~ SpatialLag.TECHSUP_Difference.Lag + yrsoffc + eiec + gov_left + gov_right + GovEffectiveness + GDP_PC + GHG_Int + Gini, data=FlowM[which(FlowM$Year %in% keyperiod),], index=c("ISO","Year"), model = "within", effect = "twoways")
+res <- summary(regTECHSUPd)
+res
+res_robust<-coeftest(regTECHSUPd, vcov.=vcovHC(regTECHSUPd, method="white2", type="HC1"))
+res_robust
+# 
+write.csv(res_robust, file="D:/Projects/2_Working Papers/Margherita/Revision NComm 2025/06-20/TECHSUP_Difference_CPDEPS.csv")
+# 
+# reg_pformula <- function(factors) {
+#     if (length(factors) == 0) return(0)
+#     formula <- paste("TECHSUP_Difference ~", paste(factors, collapse = "+"))
+#     m <- plm(formula, data = FlowM, index=c("ISO","Year"), model = "within", effect = "twoways")
+#     summary(m)$r.squared[1]
+# }
+# Rpseudo<-reg_pformula(c("SpatialLag.TECHSUP_Difference.Lag", "yrsoffc", "eiec", "gov_left", "gov_right", "GovEffectiveness", "GDP_PC", "GHG_Int", "Gini"))
+# test<-shapley(reg_pformula, c("SpatialLag.TECHSUP_Difference.Lag", "yrsoffc", "eiec", "gov_left", "gov_right", "GovEffectiveness", "GDP_PC", "GHG_Int", "Gini"), silent = TRUE)
+# test$value<-test$value
+# print(Rpseudo)
+# test
+
+```
+
+
